@@ -22,7 +22,7 @@ func main() {
 		"identifier": "enver",
 	}
 
-	conn := simple.NewHttpConnector(sdkKey, simple.WithBaseURL("https://64a55c46.fanoutcdn.com/api"))
+	conn := simple.NewHttpConnector(sdkKey, simple.WithStreamURL("https://64a55c46.fanoutcdn.com/api"))
 	err := sdk.InitWithConnector(conn)
 	if err != nil {
 		log.Printf("could not connect to SF servers %v", err)

@@ -4,13 +4,11 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
-	"fmt"
 	"github.com/hashicorp/go-retryablehttp"
 	"github.com/r3labs/sse/v2"
 	"github.com/simpleflags/evaluation"
 	"github.com/simpleflags/golang-server-sdk/connector"
 	"github.com/simpleflags/golang-server-sdk/log"
-	"go.uber.org/atomic"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -23,6 +21,7 @@ type Option func(c *simpleFlagsConfig)
 type simpleFlagsConfig struct {
 	baseURL      string
 	eventsURL    string
+	streamURL    string
 	retryWaitMax time.Duration
 }
 
@@ -35,6 +34,12 @@ func WithBaseURL(baseURL string) Option {
 func WithEventsURL(eventsURL string) Option {
 	return func(c *simpleFlagsConfig) {
 		c.eventsURL = eventsURL
+	}
+}
+
+func WithStreamURL(streamURL string) Option {
+	return func(c *simpleFlagsConfig) {
+		c.streamURL = streamURL
 	}
 }
 
@@ -51,7 +56,6 @@ type HttpConnector struct {
 	eventsApiClient *http.Client
 	stream          *sse.Client
 	cancelStream    context.CancelFunc
-	streamConnected *atomic.Bool
 }
 
 func NewHttpConnector(apiKey string, options ...Option) *HttpConnector {
@@ -59,6 +63,7 @@ func NewHttpConnector(apiKey string, options ...Option) *HttpConnector {
 	config := simpleFlagsConfig{
 		baseURL:      "http://localhost:1324/api",
 		eventsURL:    "http://localhost:1324/api",
+		streamURL:    "http://localhost:1325/api",
 		retryWaitMax: time.Second * 60,
 	}
 
@@ -79,7 +84,6 @@ func NewHttpConnector(apiKey string, options ...Option) *HttpConnector {
 		config:          config,
 		baseApiClient:   baseApiClient,
 		eventsApiClient: eventsApiClient,
-		streamConnected: atomic.NewBool(false),
 	}
 }
 
@@ -150,39 +154,53 @@ func (f *HttpConnector) Variables(ctx context.Context, identifiers ...string) ([
 }
 
 func (f *HttpConnector) Stream(ctx context.Context, updater connector.Updater) error {
-	if f.streamConnected.Load() {
+	if f.stream != nil {
 		log.Info("stream already started")
 		return nil
 	}
 	sseCtx, cancel := context.WithCancel(ctx)
 	f.cancelStream = cancel
-	f.stream = sse.NewClient(f.config.baseURL + "/stream")
+	f.stream = sse.NewClient(f.config.streamURL + "/stream")
 	f.stream.Headers["API-Key"] = f.apiKey
 	f.stream.Connection.Transport = &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
+
+	f.stream.OnConnect(func(c *sse.Client) {
+		updater.OnConnect()
+	})
+
 	f.stream.OnDisconnect(func(c *sse.Client) {
 		updater.OnDisconnect()
 	})
 
-	var connErr chan error
-	go func(connected *atomic.Bool) {
-		connErr <- f.stream.SubscribeWithContext(sseCtx, "", func(msg *sse.Event) {
+	f.stream.ReconnectNotify = func(err error, duration time.Duration) {
+		log.Errorf("Error connecting to the stream %v with reconnect timeout %f", err.Error(), duration.Seconds())
+		if duration.Seconds() >= 60 {
+			updater.OnDisconnect()
+		}
+	}
+
+	var errChan chan error
+	go func() {
+		errChan <- f.stream.SubscribeWithContext(sseCtx, "", func(msg *sse.Event) {
+			if msg == nil {
+				return
+			}
 			// Got some data!
 			updater.OnEvent(&connector.Msg{
 				Event: msg.Event,
 				Data:  msg.Data,
 			})
 		})
-	}(f.streamConnected)
+	}()
 
 	select {
-	case err := <-connErr:
-		return fmt.Errorf("error subscribing to SSE %v", err)
+	case err := <-errChan:
+		return err
 	case <-ctx.Done():
-		return nil
+		return ctx.Err()
 	default:
-		updater.OnConnect()
 		return nil
 	}
 }

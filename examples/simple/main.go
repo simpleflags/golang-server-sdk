@@ -22,7 +22,7 @@ func main() {
 		"identifier": "enver",
 	}
 
-	conn := simple.NewHttpConnector(sdkKey, simple.WithBaseURL("https://64a55c46.fanoutcdn.com/api"))
+	conn := simple.NewHttpConnector(sdkKey, simple.WithStreamURL("https://64a55c46.fanoutcdn.com/api"))
 	sf, err := client.NewWithConnector(conn)
 
 	if err != nil {

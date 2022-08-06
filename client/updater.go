@@ -28,8 +28,7 @@ func newUpdater(conn connector.Connector, repo repository.Repository, fsm *fsm.F
 }
 
 func (u *updater) start(ctx context.Context) {
-	err := u.connector.Stream(ctx, u)
-	if err != nil {
+	if err := u.connector.Stream(ctx, u); err != nil {
 		return
 	}
 	for i := 0; i < 5; i++ {
